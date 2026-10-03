@@ -1,0 +1,68 @@
+<article class="uni-card">
+    <div class="card-top">
+        {% if u.logo_url %}
+            <img class="logo" src="{{ u.logo_url }}" alt="">
+        {% else %}
+            <div class="logo placeholder">🎓</div>
+        {% endif %}
+
+        <button
+            class="icon-btn favorite-btn"
+            data-id="{{ u.id }}"
+            aria-label="Save university"
+        >
+            ♡
+        </button>
+    </div>
+
+    <div class="rank">
+        {% if u.ranking %}
+            #{{ u.ranking }} ranking
+        {% else %}
+            Ranking not available
+        {% endif %}
+    </div>
+
+    <h3>{{ u.name }}</h3>
+
+    <p class="location">
+        📍 {{ u.city or 'City not available' }},
+        {{ u.country or 'Country not available' }}
+    </p>
+
+    <div class="tags">
+        {% for m in u.majors_list[:2] %}
+            <span>{{ m }}</span>
+        {% endfor %}
+    </div>
+
+    <div class="card-info">
+        <span>Tuition</span>
+
+        <strong>
+            {% if u.tuition_min and u.tuition_max %}
+                {{ u.tuition_min|money }}–{{ u.tuition_max|money }}
+            {% elif u.tuition_min %}
+                From {{ u.tuition_min|money }}
+            {% else %}
+                Not available
+            {% endif %}
+        </strong>
+    </div>
+
+    <div class="card-actions">
+        <button
+            class="btn ghost compare-btn"
+            data-id="{{ u.id }}"
+        >
+            Compare
+        </button>
+
+        <a
+            class="btn primary"
+            href="{{ url_for('university', university_id=u.id) }}"
+        >
+            View →
+        </a>
+    </div>
+</article>

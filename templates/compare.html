@@ -1,0 +1,778 @@
+{% extends 'base.html' %}
+
+{% block title %}Compare Universities — UniScout{% endblock %}
+
+{% block content %}
+
+<section class="compare-page">
+
+    <!-- HEADER -->
+    <div class="compare-header">
+
+        <div>
+            <span class="eyebrow">COMPARE</span>
+
+            <h1>Compare universities</h1>
+
+            <p>
+                Put your shortlisted universities side-by-side
+                and see the differences at a glance.
+            </p>
+        </div>
+
+        <div class="compare-header-actions">
+
+            <a
+                href="{{ url_for('search_page') }}"
+                class="compare-action secondary"
+            >
+                + Add university
+            </a>
+
+            <button
+                type="button"
+                id="clearCompare"
+                class="compare-action secondary"
+            >
+                Clear comparison
+            </button>
+
+        </div>
+
+    </div>
+
+
+    {% if universities %}
+
+        <!-- QUICK SUMMARY -->
+        <div class="comparison-highlights">
+
+            {% set cheapest = namespace(value=None, university=None) %}
+            {% set best_ranked = namespace(value=None, university=None) %}
+
+            {% for u in universities %}
+
+                {% if u.tuition_min is not none and u.tuition_min > 0 %}
+
+                    {% if cheapest.value is none or u.tuition_min < cheapest.value %}
+
+                        {% set cheapest.value = u.tuition_min %}
+                        {% set cheapest.university = u %}
+
+                    {% endif %}
+
+                {% endif %}
+
+
+                {% if u.ranking is not none and u.ranking > 0 %}
+
+                    {% if best_ranked.value is none or u.ranking < best_ranked.value %}
+
+                        {% set best_ranked.value = u.ranking %}
+                        {% set best_ranked.university = u %}
+
+                    {% endif %}
+
+                {% endif %}
+
+            {% endfor %}
+
+
+            <!-- CHEAPEST -->
+
+            <div class="highlight-card">
+
+                <div class="highlight-icon">
+                    💰
+                </div>
+
+                <div>
+
+                    <span class="highlight-label">
+                        CHEAPEST OPTION
+                    </span>
+
+                    {% if cheapest.university %}
+
+                        <strong>
+                            {{ cheapest.university.name }}
+                        </strong>
+
+                        <p>
+                            From
+                            {{ cheapest.university.tuition_currency or "$" }}
+                            {{ "{:,.0f}".format(cheapest.value) }}
+                            {% if cheapest.university.tuition_period %}
+                                / {{ cheapest.university.tuition_period }}
+                            {% endif %}
+                        </p>
+
+                    {% else %}
+
+                        <strong>
+                            Tuition unavailable
+                        </strong>
+
+                        <p>
+                            UniScout doesn't have enough tuition data
+                            to determine the cheapest option.
+                        </p>
+
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+
+            <!-- RANKING -->
+
+            <div class="highlight-card">
+
+                <div class="highlight-icon">
+                    🏆
+                </div>
+
+                <div>
+
+                    <span class="highlight-label">
+                        HIGHEST RANKING
+                    </span>
+
+                    {% if best_ranked.university %}
+
+                        <strong>
+                            {{ best_ranked.university.name }}
+                        </strong>
+
+                        <p>
+                            Ranking #{{ best_ranked.value }}
+                        </p>
+
+                    {% else %}
+
+                        <strong>
+                            Ranking unavailable
+                        </strong>
+
+                        <p>
+                            Ranking information isn't available
+                            for these universities.
+                        </p>
+
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+
+            <!-- REVIEW DATA -->
+
+            <div class="highlight-card">
+
+                <div class="highlight-icon">
+                    ⭐
+                </div>
+
+                <div>
+
+                    <span class="highlight-label">
+                        REVIEWS
+                    </span>
+
+                    <strong>
+                        Not available
+                    </strong>
+
+                    <p>
+                        OpenAlex does not provide student review ratings.
+                    </p>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- COMPARISON CARDS -->
+
+        <div class="comparison-grid">
+
+            {% for u in universities %}
+
+                <article class="comparison-card">
+
+                    <!-- CARD HEADER -->
+
+                    <div class="comparison-card-header">
+
+                        <div class="university-mark">
+
+                            {% if u.logo_url %}
+
+                                <img
+                                    src="{{ u.logo_url }}"
+                                    alt=""
+                                    loading="lazy"
+                                    onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+                                >
+
+                                <div
+                                    class="university-mark-placeholder"
+                                    style="display:none;"
+                                >
+                                    🎓
+                                </div>
+
+                            {% else %}
+
+                                <div class="university-mark-placeholder">
+                                    🎓
+                                </div>
+
+                            {% endif %}
+
+                        </div>
+
+
+                        <div class="comparison-title">
+
+                            <h2>
+                                {{ u.name }}
+                            </h2>
+
+                            <p>
+                                📍
+                                {{ u.city or "City unavailable" }},
+                                {{ u.country or "Country unavailable" }}
+                            </p>
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- STATUS -->
+
+                    <div class="comparison-badges">
+
+                        {% if cheapest.university and cheapest.university.id == u.id %}
+
+                            <span class="comparison-badge cheapest">
+                                💰 Cheapest
+                            </span>
+
+                        {% endif %}
+
+
+                        {% if best_ranked.university and best_ranked.university.id == u.id %}
+
+                            <span class="comparison-badge ranking">
+                                🏆 Highest ranked
+                            </span>
+
+                        {% endif %}
+
+                    </div>
+
+
+                    <!-- DATA -->
+
+                    <div class="comparison-details">
+
+
+                        <!-- TUITION -->
+
+                        <div class="comparison-row">
+
+                            <div class="comparison-label">
+                                <span>💰</span>
+                                Tuition
+                            </div>
+
+                            <div class="comparison-value">
+
+                                {% if u.tuition_min is not none and u.tuition_max is not none %}
+
+                                    <strong>
+                                        {{ u.tuition_currency or "$" }}
+                                        {{ "{:,.0f}".format(u.tuition_min) }}
+                                        –
+                                        {{ "{:,.0f}".format(u.tuition_max) }}
+                                    </strong>
+
+                                    {% if u.tuition_period %}
+
+                                        <small>
+                                            per {{ u.tuition_period }}
+                                        </small>
+
+                                    {% endif %}
+
+                                {% elif u.tuition_min is not none %}
+
+                                    <strong>
+                                        From
+                                        {{ u.tuition_currency or "$" }}
+                                        {{ "{:,.0f}".format(u.tuition_min) }}
+                                    </strong>
+
+                                {% else %}
+
+                                    <span class="unavailable">
+                                        Not available
+                                    </span>
+
+                                {% endif %}
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- RANKING -->
+
+                        <div class="comparison-row">
+
+                            <div class="comparison-label">
+                                <span>🏆</span>
+                                Ranking
+                            </div>
+
+                            <div class="comparison-value">
+
+                                {% if u.ranking %}
+
+                                    <strong>
+                                        #{{ u.ranking }}
+                                    </strong>
+
+                                {% else %}
+
+                                    <span class="unavailable">
+                                        Not available
+                                    </span>
+
+                                {% endif %}
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- REVIEWS -->
+
+                        <div class="comparison-row">
+
+                            <div class="comparison-label">
+                                <span>⭐</span>
+                                Reviews
+                            </div>
+
+                            <div class="comparison-value">
+
+                                <span class="unavailable">
+                                    Not available
+                                </span>
+
+                                <small>
+                                    No verified review data
+                                </small>
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- TYPE -->
+
+                        <div class="comparison-row">
+
+                            <div class="comparison-label">
+                                <span>🏛️</span>
+                                Type
+                            </div>
+
+                            <div class="comparison-value">
+
+                                {{ u.university_type or "Not available" }}
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- CITY -->
+
+                        <div class="comparison-row">
+
+                            <div class="comparison-label">
+                                <span>📍</span>
+                                Location
+                            </div>
+
+                            <div class="comparison-value">
+
+                                {{ u.city or "Not available" }}
+
+                                {% if u.country %}
+
+                                    <small>
+                                        {{ u.country }}
+                                    </small>
+
+                                {% endif %}
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- STUDENTS -->
+
+                        <div class="comparison-row">
+
+                            <div class="comparison-label">
+                                <span>👥</span>
+                                Students
+                            </div>
+
+                            <div class="comparison-value">
+
+                                {% if u.student_count %}
+
+                                    {{ "{:,}".format(u.student_count) }}
+
+                                {% else %}
+
+                                    <span class="unavailable">
+                                        Not available
+                                    </span>
+
+                                {% endif %}
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- INTERNATIONAL -->
+
+                        <div class="comparison-row">
+
+                            <div class="comparison-label">
+                                <span>🌎</span>
+                                International students
+                            </div>
+
+                            <div class="comparison-value">
+
+                                {% if u.international_student_count %}
+
+                                    {{ "{:,}".format(
+                                        u.international_student_count
+                                    ) }}
+
+                                {% else %}
+
+                                    <span class="unavailable">
+                                        Not available
+                                    </span>
+
+                                {% endif %}
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- MAJORS -->
+
+                        <div class="comparison-row vertical">
+
+                            <div class="comparison-label">
+                                <span>🎓</span>
+                                Majors
+                            </div>
+
+                            <div class="major-list">
+
+                                {% if u.majors %}
+
+                                    {% for major in u.majors.split("|")[:8] %}
+
+                                        {% if major.strip() %}
+
+                                            <span>
+                                                {{ major.strip() }}
+                                            </span>
+
+                                        {% endif %}
+
+                                    {% endfor %}
+
+                                {% else %}
+
+                                    <span class="unavailable">
+                                        Not available
+                                    </span>
+
+                                {% endif %}
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- DEGREE -->
+
+                        <div class="comparison-row vertical">
+
+                            <div class="comparison-label">
+                                <span>📚</span>
+                                Degree levels
+                            </div>
+
+                            <div class="major-list">
+
+                                {% if u.degree_levels %}
+
+                                    {% for degree in u.degree_levels.split("|") %}
+
+                                        {% if degree.strip() %}
+
+                                            <span>
+                                                {{ degree.strip() }}
+                                            </span>
+
+                                        {% endif %}
+
+                                    {% endfor %}
+
+                                {% else %}
+
+                                    <span class="unavailable">
+                                        Not available
+                                    </span>
+
+                                {% endif %}
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- ACTIONS -->
+
+                    <div class="comparison-card-actions">
+
+                        <a
+                            href="{{ url_for('university', uid=u.id) }}"
+                            class="comparison-button primary"
+                        >
+                            View profile
+                        </a>
+
+                        {% if u.safe_website %}
+
+                            <a
+                                href="{{ u.safe_website }}"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="comparison-button secondary"
+                            >
+                                Official website ↗
+                            </a>
+
+                        {% endif %}
+
+                        <button
+                            type="button"
+                            class="remove-compare"
+                            data-id="{{ u.id }}"
+                        >
+                            Remove
+                        </button>
+
+                    </div>
+
+                </article>
+
+            {% endfor %}
+
+        </div>
+
+
+        <!-- FINAL SUGGESTION -->
+
+        <section class="comparison-recommendation">
+
+            <div class="recommendation-icon">
+                ✨
+            </div>
+
+            <div class="recommendation-content">
+
+                <span class="eyebrow">
+                    UNISCOUT SUGGESTION
+                </span>
+
+                <h2>
+                    Which one should you look at first?
+                </h2>
+
+
+                {% if cheapest.university and best_ranked.university %}
+
+                    {% if cheapest.university.id == best_ranked.university.id %}
+
+                        <p>
+
+                            <strong>
+                                {{ cheapest.university.name }}
+                            </strong>
+
+                            stands out in the available UniScout data
+                            because it currently has the lowest available
+                            tuition among your selections and the strongest
+                            available ranking.
+
+                        </p>
+
+                    {% else %}
+
+                        <p>
+
+                            Based on the information currently available
+                            in UniScout,
+
+                            <strong>
+                                {{ cheapest.university.name }}
+                            </strong>
+
+                            is the lower-cost option, while
+
+                            <strong>
+                                {{ best_ranked.university.name }}
+                            </strong>
+
+                            has the strongest available ranking.
+
+                            Your choice may depend on whether tuition,
+                            ranking, location, or program availability
+                            matters most to you.
+
+                        </p>
+
+                    {% endif %}
+
+
+                {% elif cheapest.university %}
+
+                    <p>
+
+                        <strong>
+                            {{ cheapest.university.name }}
+                        </strong>
+
+                        is currently the lowest-cost option based on the
+                        tuition information available in UniScout.
+
+                        Ranking and review data are not sufficiently
+                        available to make a broader comparison.
+
+                    </p>
+
+
+                {% elif best_ranked.university %}
+
+                    <p>
+
+                        <strong>
+                            {{ best_ranked.university.name }}
+                        </strong>
+
+                        currently has the strongest available ranking
+                        among your selections.
+
+                        Tuition and review information is incomplete,
+                        so consider checking each university's profile
+                        before making a decision.
+
+                    </p>
+
+
+                {% else %}
+
+                    <p>
+
+                        UniScout doesn't currently have enough verified
+                        tuition or ranking information to identify a
+                        standout option.
+
+                        Compare the programs, locations, and official
+                        admission information for your final decision.
+
+                    </p>
+
+                {% endif %}
+
+            </div>
+
+        </section>
+
+
+        <!-- DATA NOTICE -->
+
+        <div class="comparison-notice">
+
+            <span>ⓘ</span>
+
+            <p>
+                UniScout only compares information available in its
+                database. Missing tuition, ranking, review, or student
+                information is shown as "Not available" rather than
+                estimated or invented.
+            </p>
+
+        </div>
+
+
+    {% else %}
+
+
+        <!-- EMPTY STATE -->
+
+        <section class="comparison-empty">
+
+            <div class="empty-icon">
+                ⚖️
+            </div>
+
+            <h2>
+                No universities selected
+            </h2>
+
+            <p>
+                Add two to four universities from Explore
+                to compare them side-by-side.
+            </p>
+
+            <a
+                href="{{ url_for('search_page') }}"
+                class="comparison-button primary"
+            >
+                Browse universities
+            </a>
+
+        </section>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}
