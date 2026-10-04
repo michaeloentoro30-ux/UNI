@@ -50,7 +50,6 @@ ON universities(city);
 CREATE INDEX IF NOT EXISTS idx_universities_ranking
 ON universities(ranking);
 
-
 CREATE TABLE IF NOT EXISTS university_stats (
     university_id INTEGER PRIMARY KEY,
     popularity INTEGER DEFAULT 0,
@@ -63,10 +62,8 @@ CREATE TABLE IF NOT EXISTS university_stats (
 
 
 def tuition_database_available():
-    """
-    Check whether the separate tuition database exists
-    and contains the expected table.
-    """
+    """Check whether the separate tuition database exists."""
+
     if not os.path.exists(TUITION_DB_PATH):
         return False
 
@@ -95,8 +92,8 @@ def get_db():
     """
     Open the main UniScout database.
 
-    The tuition database is attached when available.
-    If it is missing, UniScout continues working normally.
+    If tuition_estimates.db exists, attach it automatically.
+    If it doesn't exist, the main app still works normally.
     """
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -109,13 +106,17 @@ def get_db():
     tuition_attached = False
 
     try:
+
         if tuition_database_available():
+
             try:
                 conn.execute(
                     "ATTACH DATABASE ? AS tuition_db",
                     (TUITION_DB_PATH,)
                 )
+
                 tuition_attached = True
+
             except Exception:
                 tuition_attached = False
 
@@ -124,11 +125,14 @@ def get_db():
         conn.commit()
 
     except Exception:
+
         conn.rollback()
         raise
 
     finally:
+
         if tuition_attached:
+
             try:
                 conn.execute("DETACH DATABASE tuition_db")
             except Exception:
@@ -138,17 +142,13 @@ def get_db():
 
 
 def init_db():
-    """
-    Initialize the main UniScout database.
-    """
+
     with get_db() as db:
         db.executescript(SCHEMA)
 
 
 def split_list(value):
-    """
-    Convert pipe-separated database values into a Python list.
-    """
+
     if not value:
         return []
 
@@ -160,10 +160,6 @@ def split_list(value):
 
 
 def normalize_university(row):
-    """
-    Convert sqlite Row into a normal dictionary and add
-    convenient fields for the application.
-    """
 
     if row is None:
         return None
@@ -186,12 +182,9 @@ def normalize_university(row):
 
 
 def _has_tuition_db(db):
-    """
-    Determine whether the tuition database is attached
-    to this connection.
-    """
 
     try:
+
         row = db.execute(
             """
             SELECT name
@@ -204,16 +197,11 @@ def _has_tuition_db(db):
         return row is not None
 
     except Exception:
+
         return False
 
 
 def _university_select(db):
-    """
-    Build the main university SELECT query.
-
-    Existing tuition stored in uniscout.db takes priority.
-    Estimated tuition is used only when existing tuition is NULL.
-    """
 
     if _has_tuition_db(db):
 
@@ -438,7 +426,14 @@ def search_universities(
             )
 
             params.extend(
-                [like, like, like, like, like, like]
+                [
+                    like,
+                    like,
+                    like,
+                    like,
+                    like,
+                    like
+                ]
             )
 
         if country:
@@ -521,23 +516,23 @@ def search_universities(
                 " AND ".join(conditions)
             )
 
-        count_query = f"""
+        total = db.execute(
+            f"""
             SELECT COUNT(*)
             FROM universities u
-            {tuition_join}
-            {where_clause}
-        """
 
-        total = db.execute(
-            count_query,
+            {tuition_join}
+
+            {where_clause}
+            """,
             params
         ).fetchone()[0]
 
-        select_query = _university_select(db)
+        query = _university_select(db)
 
         rows = db.execute(
             f"""
-            {select_query}
+            {query}
 
             {where_clause}
 
@@ -553,7 +548,10 @@ def search_universities(
             LIMIT ?
             OFFSET ?
             """,
-            params + [limit, offset]
+            params + [
+                limit,
+                offset
+            ]
         ).fetchall()
 
         return [
@@ -571,6 +569,7 @@ def get_university(uid):
         row = db.execute(
             f"""
             {query}
+
             WHERE u.id = ?
             """,
             (uid,)
@@ -579,10 +578,15 @@ def get_university(uid):
         if row:
 
             try:
+
                 db.execute(
                     """
                     INSERT OR IGNORE INTO university_stats
-                    (university_id, popularity, views)
+                    (
+                        university_id,
+                        popularity,
+                        views
+                    )
                     VALUES (?, 0, 0)
                     """,
                     (uid,)
@@ -598,6 +602,7 @@ def get_university(uid):
                 )
 
             except sqlite3.Error:
+
                 pass
 
         return normalize_university(row)
@@ -624,7 +629,10 @@ def suggestions(q, limit=10):
             ORDER BY name
             LIMIT ?
             """,
-            (like, limit)
+            (
+                like,
+                limit
+            )
         ).fetchall()
 
         for row in rows:
@@ -653,7 +661,10 @@ def suggestions(q, limit=10):
                 ORDER BY country
                 LIMIT ?
                 """,
-                (like, remaining)
+                (
+                    like,
+                    remaining
+                )
             ).fetchall()
 
             for row in rows:
@@ -679,7 +690,10 @@ def suggestions(q, limit=10):
                 ORDER BY city
                 LIMIT ?
                 """,
-                (like, remaining)
+                (
+                    like,
+                    remaining
+                )
             ).fetchall()
 
             for row in rows:
@@ -862,7 +876,11 @@ def upsert_university(record):
         db.execute(
             """
             INSERT OR IGNORE INTO university_stats
-            (university_id, popularity, views)
+            (
+                university_id,
+                popularity,
+                views
+            )
             VALUES (?, 0, 0)
             """,
             (university_id,)
