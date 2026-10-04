@@ -5,10 +5,7 @@ from contextlib import contextmanager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Main UniScout database
 DB_PATH = os.path.join(BASE_DIR, "data", "uniscout.db")
-
-# Separate estimated tuition database
 TUITION_DB_PATH = os.path.join(BASE_DIR, "data", "tuition_estimates.db")
 
 
@@ -53,9 +50,6 @@ ON universities(city);
 CREATE INDEX IF NOT EXISTS idx_universities_ranking
 ON universities(ranking);
 
-CREATE INDEX IF NOT EXISTS idx_universities_type
-ON universities(university_type);
-
 
 CREATE TABLE IF NOT EXISTS university_stats (
     university_id INTEGER PRIMARY KEY,
@@ -68,58 +62,65 @@ CREATE TABLE IF NOT EXISTS university_stats (
 """
 
 
-def _attach_tuition_database(conn):
+def tuition_database_available():
     """
-    Attach the separate tuition database if it exists.
-
-    This is intentionally optional so the app still works normally
-    if tuition_estimates.db is missing.
+    Check whether the separate tuition database exists
+    and contains the expected table.
     """
     if not os.path.exists(TUITION_DB_PATH):
         return False
 
     try:
-        conn.execute("ATTACH DATABASE ? AS tuition_db", (TUITION_DB_PATH,))
+        conn = sqlite3.connect(TUITION_DB_PATH)
 
-        # Make sure the expected table exists.
-        table = conn.execute(
+        result = conn.execute(
             """
             SELECT name
-            FROM tuition_db.sqlite_master
+            FROM sqlite_master
             WHERE type = 'table'
               AND name = 'tuition_estimates'
             """
         ).fetchone()
 
-        return table is not None
+        conn.close()
+
+        return result is not None
 
     except Exception:
-        # Never allow the tuition database to break UniScout.
-        try:
-            conn.execute("DETACH DATABASE tuition_db")
-        except Exception:
-            pass
-
         return False
 
 
 @contextmanager
 def get_db():
+    """
+    Open the main UniScout database.
+
+    The tuition database is attached when available.
+    If it is missing, UniScout continues working normally.
+    """
+
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
 
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA foreign_keys = ON")
 
-    tuition_available = _attach_tuition_database(conn)
-
-    # Store this on the connection so helper functions can know
-    # whether the external tuition DB was successfully attached.
-    conn.tuition_available = tuition_available
+    tuition_attached = False
 
     try:
+        if tuition_database_available():
+            try:
+                conn.execute(
+                    "ATTACH DATABASE ? AS tuition_db",
+                    (TUITION_DB_PATH,)
+                )
+                tuition_attached = True
+            except Exception:
+                tuition_attached = False
+
         yield conn
+
         conn.commit()
 
     except Exception:
@@ -127,7 +128,7 @@ def get_db():
         raise
 
     finally:
-        if tuition_available:
+        if tuition_attached:
             try:
                 conn.execute("DETACH DATABASE tuition_db")
             except Exception:
@@ -137,91 +138,143 @@ def get_db():
 
 
 def init_db():
+    """
+    Initialize the main UniScout database.
+    """
     with get_db() as db:
         db.executescript(SCHEMA)
 
 
-def row_to_dict(row):
-    return dict(row) if row else None
-
-
 def split_list(value):
+    """
+    Convert pipe-separated database values into a Python list.
+    """
     if not value:
         return []
 
     return [
-        x.strip()
-        for x in value.split("|")
-        if x.strip()
+        item.strip()
+        for item in value.split("|")
+        if item.strip()
     ]
 
 
 def normalize_university(row):
-    if not row:
+    """
+    Convert sqlite Row into a normal dictionary and add
+    convenient fields for the application.
+    """
+
+    if row is None:
         return None
 
-    d = dict(row)
+    university = dict(row)
 
-    d["majors_list"] = split_list(d.get("majors"))
-    d["degree_levels_list"] = split_list(d.get("degree_levels"))
-
-    # Helpful flags for the frontend.
-    d["tuition_is_estimate"] = bool(
-        d.get("tuition_estimated", 0)
+    university["majors_list"] = split_list(
+        university.get("majors")
     )
 
-    return d
+    university["degree_levels_list"] = split_list(
+        university.get("degree_levels")
+    )
+
+    university["tuition_is_estimate"] = bool(
+        university.get("tuition_estimated", 0)
+    )
+
+    return university
 
 
-def _tuition_columns(db):
+def _has_tuition_db(db):
     """
-    Returns SQL expressions for tuition fields.
-
-    Existing tuition data in uniscout.db always wins.
-    If it is NULL, the separate tuition_estimates.db value is used.
+    Determine whether the tuition database is attached
+    to this connection.
     """
 
-    if getattr(db, "tuition_available", False):
-        return {
-            "min": "COALESCE(u.tuition_min, t.estimated_min)",
-            "max": "COALESCE(u.tuition_max, t.estimated_max)",
-            "currency": "COALESCE(u.tuition_currency, t.currency)",
-            "period": "COALESCE(u.tuition_period, t.period)",
-            "estimated": """
+    try:
+        row = db.execute(
+            """
+            SELECT name
+            FROM tuition_db.sqlite_master
+            WHERE type = 'table'
+              AND name = 'tuition_estimates'
+            """
+        ).fetchone()
+
+        return row is not None
+
+    except Exception:
+        return False
+
+
+def _university_select(db):
+    """
+    Build the main university SELECT query.
+
+    Existing tuition stored in uniscout.db takes priority.
+    Estimated tuition is used only when existing tuition is NULL.
+    """
+
+    if _has_tuition_db(db):
+
+        return """
+            SELECT
+                u.id,
+                u.name,
+                u.country,
+                u.country_code,
+                u.city,
+                u.website,
+                u.logo_url,
+                u.description,
+                u.ranking,
+
+                COALESCE(
+                    u.tuition_min,
+                    t.estimated_min
+                ) AS tuition_min,
+
+                COALESCE(
+                    u.tuition_max,
+                    t.estimated_max
+                ) AS tuition_max,
+
+                COALESCE(
+                    u.tuition_currency,
+                    t.currency
+                ) AS tuition_currency,
+
+                COALESCE(
+                    u.tuition_period,
+                    t.period
+                ) AS tuition_period,
+
                 CASE
                     WHEN u.tuition_min IS NULL
                      AND t.estimated_min IS NOT NULL
                     THEN 1
                     ELSE 0
-                END
-            """,
-        }
+                END AS tuition_estimated,
 
-    return {
-        "min": "u.tuition_min",
-        "max": "u.tuition_max",
-        "currency": "u.tuition_currency",
-        "period": "u.tuition_period",
-        "estimated": "0",
-    }
+                u.university_type,
+                u.student_count,
+                u.international_student_count,
+                u.majors,
+                u.degree_levels,
+                u.admission_requirements,
+                u.application_deadline,
+                u.source,
+                u.source_id,
+                u.last_updated,
+                u.created_at
 
+            FROM universities u
 
-def _university_select(db):
-    """
-    Full university SELECT with tuition estimates merged in.
-    """
-
-    tuition = _tuition_columns(db)
-
-    if getattr(db, "tuition_available", False):
-        join = """
             LEFT JOIN tuition_db.tuition_estimates t
                 ON t.university_id = u.id
         """
-    else:
-        join = ""
 
-    return f"""
+    return """
         SELECT
             u.id,
             u.name,
@@ -233,11 +286,12 @@ def _university_select(db):
             u.description,
             u.ranking,
 
-            {tuition["min"]} AS tuition_min,
-            {tuition["max"]} AS tuition_max,
-            {tuition["currency"]} AS tuition_currency,
-            {tuition["period"]} AS tuition_period,
-            {tuition["estimated"]} AS tuition_estimated,
+            u.tuition_min AS tuition_min,
+            u.tuition_max AS tuition_max,
+            u.tuition_currency AS tuition_currency,
+            u.tuition_period AS tuition_period,
+
+            0 AS tuition_estimated,
 
             u.university_type,
             u.student_count,
@@ -252,12 +306,11 @@ def _university_select(db):
             u.created_at
 
         FROM universities u
-
-        {join}
     """
 
 
 def list_distinct(column, country=None):
+
     allowed = {
         "country",
         "city",
@@ -277,50 +330,51 @@ def list_distinct(column, country=None):
                 SELECT majors
                 FROM universities
                 WHERE majors IS NOT NULL
-                  AND majors != ""
+                  AND majors != ''
                 """
             ).fetchall()
 
-            vals = sorted(
+            values = sorted(
                 {
-                    m.strip()
-                    for r in rows
-                    for m in split_list(r["majors"])
+                    major.strip()
+                    for row in rows
+                    for major in split_list(row["majors"])
                 },
-                key=str.lower,
+                key=str.lower
             )
+
+            return values
+
+        if column == "city" and country:
+
+            rows = db.execute(
+                """
+                SELECT DISTINCT city
+                FROM universities
+                WHERE city IS NOT NULL
+                  AND city != ''
+                  AND country = ?
+                ORDER BY city COLLATE NOCASE
+                """,
+                (country,)
+            ).fetchall()
 
         else:
 
-            if column == "city" and country:
+            rows = db.execute(
+                f"""
+                SELECT DISTINCT {column}
+                FROM universities
+                WHERE {column} IS NOT NULL
+                  AND {column} != ''
+                ORDER BY {column} COLLATE NOCASE
+                """
+            ).fetchall()
 
-                rows = db.execute(
-                    """
-                    SELECT DISTINCT city
-                    FROM universities
-                    WHERE city IS NOT NULL
-                      AND city != ""
-                      AND country = ?
-                    ORDER BY city COLLATE NOCASE
-                    """,
-                    (country,),
-                ).fetchall()
-
-            else:
-
-                rows = db.execute(
-                    f"""
-                    SELECT DISTINCT {column}
-                    FROM universities
-                    WHERE {column} IS NOT NULL
-                      AND {column} != ""
-                    ORDER BY {column} COLLATE NOCASE
-                    """
-                ).fetchall()
-
-            vals = [r[column] for r in rows]
-
-    return vals
+        return [
+            row[column]
+            for row in rows
+        ]
 
 
 def search_universities(
@@ -333,21 +387,44 @@ def search_universities(
     university_type="",
     min_ranking=None,
     limit=60,
-    offset=0,
+    offset=0
 ):
-    clauses = []
+
+    conditions = []
     params = []
 
     q = (q or "").strip()
 
     with get_db() as db:
 
-        tuition = _tuition_columns(db)
+        has_tuition = _has_tuition_db(db)
+
+        if has_tuition:
+
+            tuition_min = """
+                COALESCE(u.tuition_min, t.estimated_min)
+            """
+
+            tuition_max = """
+                COALESCE(u.tuition_max, t.estimated_max)
+            """
+
+            tuition_join = """
+                LEFT JOIN tuition_db.tuition_estimates t
+                    ON t.university_id = u.id
+            """
+
+        else:
+
+            tuition_min = "u.tuition_min"
+            tuition_max = "u.tuition_max"
+            tuition_join = ""
 
         if q:
+
             like = f"%{q}%"
 
-            clauses.append(
+            conditions.append(
                 """
                 (
                     u.name LIKE ?
@@ -360,50 +437,71 @@ def search_universities(
                 """
             )
 
-            params += [like] * 6
+            params.extend(
+                [like, like, like, like, like, like]
+            )
 
         if country:
-            clauses.append("u.country = ?")
+
+            conditions.append(
+                "u.country = ?"
+            )
+
             params.append(country)
 
         if city:
-            clauses.append("u.city = ?")
+
+            conditions.append(
+                "u.city = ?"
+            )
+
             params.append(city)
 
         if major:
-            clauses.append("u.majors LIKE ?")
+
+            conditions.append(
+                "u.majors LIKE ?"
+            )
+
             params.append(f"%{major}%")
 
-        # IMPORTANT:
-        # These filters now work with the estimated tuition DB too.
         if min_tuition is not None:
-            clauses.append(
+
+            conditions.append(
                 f"""
                 (
-                    {tuition["max"]} IS NULL
-                    OR {tuition["max"]} >= ?
+                    {tuition_max} IS NULL
+                    OR {tuition_max} >= ?
                 )
                 """
             )
+
             params.append(min_tuition)
 
         if max_tuition is not None:
-            clauses.append(
+
+            conditions.append(
                 f"""
                 (
-                    {tuition["min"]} IS NULL
-                    OR {tuition["min"]} <= ?
+                    {tuition_min} IS NULL
+                    OR {tuition_min} <= ?
                 )
                 """
             )
+
             params.append(max_tuition)
 
         if university_type:
-            clauses.append("u.university_type = ?")
+
+            conditions.append(
+                "u.university_type = ?"
+            )
+
             params.append(university_type)
 
         if min_ranking is not None:
-            clauses.append(
+
+            conditions.append(
                 """
                 (
                     u.ranking IS NOT NULL
@@ -411,58 +509,61 @@ def search_universities(
                 )
                 """
             )
+
             params.append(min_ranking)
 
-        where = ""
+        where_clause = ""
 
-        if clauses:
-            where = "WHERE " + " AND ".join(clauses)
+        if conditions:
 
-        if getattr(db, "tuition_available", False):
-            join = """
-                LEFT JOIN tuition_db.tuition_estimates t
-                    ON t.university_id = u.id
-            """
-        else:
-            join = ""
+            where_clause = (
+                "WHERE " +
+                " AND ".join(conditions)
+            )
 
-        order = """
-            ORDER BY
-                CASE
-                    WHEN u.ranking IS NULL THEN 999999
-                    ELSE u.ranking
-                END ASC,
-                u.name COLLATE NOCASE ASC
+        count_query = f"""
+            SELECT COUNT(*)
+            FROM universities u
+            {tuition_join}
+            {where_clause}
         """
 
         total = db.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM universities u
-            {join}
-            {where}
-            """,
-            params,
+            count_query,
+            params
         ).fetchone()[0]
+
+        select_query = _university_select(db)
 
         rows = db.execute(
             f"""
-            {_university_select(db)}
-            {where}
-            {order}
+            {select_query}
+
+            {where_clause}
+
+            ORDER BY
+                CASE
+                    WHEN u.ranking IS NULL
+                    THEN 999999
+                    ELSE u.ranking
+                END ASC,
+
+                u.name COLLATE NOCASE ASC
+
             LIMIT ?
             OFFSET ?
             """,
-            params + [limit, offset],
+            params + [limit, offset]
         ).fetchall()
 
         return [
-            normalize_university(r)
-            for r in rows
+            normalize_university(row)
+            for row in rows
         ], total
 
 
 def get_university(uid):
+
     with get_db() as db:
 
         query = _university_select(db)
@@ -472,24 +573,38 @@ def get_university(uid):
             {query}
             WHERE u.id = ?
             """,
-            (uid,),
+            (uid,)
         ).fetchone()
 
         if row:
 
-            db.execute(
-                """
-                UPDATE university_stats
-                SET views = views + 1
-                WHERE university_id = ?
-                """,
-                (uid,),
-            )
+            try:
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO university_stats
+                    (university_id, popularity, views)
+                    VALUES (?, 0, 0)
+                    """,
+                    (uid,)
+                )
+
+                db.execute(
+                    """
+                    UPDATE university_stats
+                    SET views = views + 1
+                    WHERE university_id = ?
+                    """,
+                    (uid,)
+                )
+
+            except sqlite3.Error:
+                pass
 
         return normalize_university(row)
 
 
 def suggestions(q, limit=10):
+
     q = (q or "").strip()
 
     if len(q) < 2:
@@ -497,7 +612,7 @@ def suggestions(q, limit=10):
 
     like = f"%{q}%"
 
-    out = []
+    results = []
 
     with get_db() as db:
 
@@ -509,23 +624,24 @@ def suggestions(q, limit=10):
             ORDER BY name
             LIMIT ?
             """,
-            (like, limit),
+            (like, limit)
         ).fetchall()
 
-        out += [
-            {
-                "type": "university",
-                "label": r["name"],
-                "sub": (
-                    f"{r['city'] or 'Unknown city'}, "
-                    f"{r['country'] or 'Unknown country'}"
-                ),
-                "value": r["name"],
-            }
-            for r in rows
-        ]
+        for row in rows:
 
-        remaining = limit - len(out)
+            results.append(
+                {
+                    "type": "university",
+                    "label": row["name"],
+                    "sub": (
+                        f"{row['city'] or 'Unknown city'}, "
+                        f"{row['country'] or 'Unknown country'}"
+                    ),
+                    "value": row["name"]
+                }
+            )
+
+        remaining = limit - len(results)
 
         if remaining > 0:
 
@@ -537,20 +653,21 @@ def suggestions(q, limit=10):
                 ORDER BY country
                 LIMIT ?
                 """,
-                (like, remaining),
+                (like, remaining)
             ).fetchall()
 
-            out += [
-                {
-                    "type": "country",
-                    "label": r["country"],
-                    "sub": "Country",
-                    "value": r["country"],
-                }
-                for r in rows
-            ]
+            for row in rows:
 
-        remaining = limit - len(out)
+                results.append(
+                    {
+                        "type": "country",
+                        "label": row["country"],
+                        "sub": "Country",
+                        "value": row["country"]
+                    }
+                )
+
+        remaining = limit - len(results)
 
         if remaining > 0:
 
@@ -562,20 +679,21 @@ def suggestions(q, limit=10):
                 ORDER BY city
                 LIMIT ?
                 """,
-                (like, remaining),
+                (like, remaining)
             ).fetchall()
 
-            out += [
-                {
-                    "type": "city",
-                    "label": r["city"],
-                    "sub": r["country"] or "City",
-                    "value": r["city"],
-                }
-                for r in rows
-            ]
+            for row in rows:
 
-        remaining = limit - len(out)
+                results.append(
+                    {
+                        "type": "city",
+                        "label": row["city"],
+                        "sub": row["country"] or "City",
+                        "value": row["city"]
+                    }
+                )
+
+        remaining = limit - len(results)
 
         if remaining > 0:
 
@@ -586,33 +704,35 @@ def suggestions(q, limit=10):
                 WHERE majors LIKE ?
                 LIMIT 30
                 """,
-                (like,),
+                (like,)
             ).fetchall()
 
             majors = sorted(
                 {
-                    m
-                    for r in rows
-                    for m in split_list(r["majors"])
-                    if q.lower() in m.lower()
+                    major
+                    for row in rows
+                    for major in split_list(row["majors"])
+                    if q.lower() in major.lower()
                 },
-                key=str.lower,
-            )[:remaining]
+                key=str.lower
+            )
 
-            out += [
-                {
-                    "type": "major",
-                    "label": m,
-                    "sub": "Major",
-                    "value": m,
-                }
-                for m in majors
-            ]
+            for major in majors[:remaining]:
 
-    return out[:limit]
+                results.append(
+                    {
+                        "type": "major",
+                        "label": major,
+                        "sub": "Major",
+                        "value": major
+                    }
+                )
+
+    return results[:limit]
 
 
 def upsert_university(record):
+
     fields = [
         "name",
         "country",
@@ -635,12 +755,12 @@ def upsert_university(record):
         "application_deadline",
         "source",
         "source_id",
-        "last_updated",
+        "last_updated"
     ]
 
     data = {
-        k: record.get(k)
-        for k in fields
+        field: record.get(field)
+        for field in fields
     }
 
     with get_db() as db:
@@ -658,33 +778,40 @@ def upsert_university(record):
                 """,
                 (
                     data["source"],
-                    data["source_id"],
-                ),
+                    data["source_id"]
+                )
             ).fetchone()
 
         if existing:
 
-            sets = ", ".join(
-                f"{k} = ?"
-                for k in fields
-                if k not in ("source", "source_id")
-            )
-
-            vals = [
-                data[k]
-                for k in fields
-                if k not in ("source", "source_id")
+            update_fields = [
+                field
+                for field in fields
+                if field not in (
+                    "source",
+                    "source_id"
+                )
             ]
 
-            vals.append(existing["id"])
+            set_clause = ", ".join(
+                f"{field} = ?"
+                for field in update_fields
+            )
+
+            values = [
+                data[field]
+                for field in update_fields
+            ]
+
+            values.append(existing["id"])
 
             db.execute(
                 f"""
                 UPDATE universities
-                SET {sets}
+                SET {set_clause}
                 WHERE id = ?
                 """,
-                vals,
+                values
             )
 
             return "updated", existing["id"]
@@ -694,41 +821,52 @@ def upsert_university(record):
             SELECT id
             FROM universities
             WHERE lower(name) = lower(?)
-              AND lower(COALESCE(country, "")) =
-                  lower(COALESCE(?, ""))
+              AND lower(
+                    COALESCE(country, '')
+                  ) = lower(
+                    COALESCE(?, '')
+                  )
             """,
             (
                 data["name"],
-                data["country"],
-            ),
+                data["country"]
+            )
         ).fetchone()
 
         if duplicate:
+
             return "skipped", duplicate["id"]
 
-        cols = ",".join(fields)
-        marks = ",".join("?" for _ in fields)
+        columns = ",".join(fields)
 
-        cur = db.execute(
-            f"""
-            INSERT INTO universities ({cols})
-            VALUES ({marks})
-            """,
-            [
-                data[k]
-                for k in fields
-            ],
+        placeholders = ",".join(
+            "?"
+            for _ in fields
         )
 
-        uid = cur.lastrowid
+        cursor = db.execute(
+            f"""
+            INSERT INTO universities
+            ({columns})
+            VALUES
+            ({placeholders})
+            """,
+            [
+                data[field]
+                for field in fields
+            ]
+        )
+
+        university_id = cursor.lastrowid
 
         db.execute(
             """
-            INSERT OR IGNORE INTO university_stats(university_id)
-            VALUES(?)
+            INSERT OR IGNORE INTO university_stats
+            (university_id, popularity, views)
+            VALUES (?, 0, 0)
             """,
-            (uid,),
+            (university_id,)
         )
 
-        return "new", uid
+        return "new", university_id
 ```
