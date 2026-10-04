@@ -1,32 +1,4 @@
-"""
-UniScout OpenAlex institution importer.
-
-Downloads education institutions from OpenAlex using cursor pagination
-and passes each institution through source_manager.normalize_openalex()
-before saving it with source_manager.import_records().
-
-The normalized records are expected to contain:
-- university name
-- country
-- country code
-- city
-- website
-- logo
-- description
-- estimated ranking
-- estimated tuition
-- tuition currency
-- tuition period
-- university type
-- estimated student count
-- estimated international student count
-- estimated majors
-- degree levels
-- admission requirements
-- application deadline
-- OpenAlex source ID
-"""
-
+"""Reliable OpenAlex institution importer used by app.py on first startup."""
 import json
 import os
 import time
@@ -36,102 +8,35 @@ import urllib.error
 
 from source_manager import normalize_openalex, import_records
 
-
 API = "https://api.openalex.org/institutions"
-
 DEFAULT_PER_PAGE = 200
 
-MAX_RETRIES = 8
 
-REQUEST_TIMEOUT = 90
-
-REQUEST_DELAY = 0.15
-
-
-# ============================================================
-# OPENALEX REQUEST
-# ============================================================
-
-def fetch_page(
-    cursor="*",
-    per_page=DEFAULT_PER_PAGE,
-    mailto=None,
-    timeout=REQUEST_TIMEOUT,
-    retries=MAX_RETRIES,
-):
-    """
-    Download one page of OpenAlex institutions.
-
-    OpenAlex uses cursor pagination. The cursor returned by one
-    request is used to request the next page.
-    """
-
-    try:
-        per_page = int(per_page)
-    except (TypeError, ValueError):
-        per_page = DEFAULT_PER_PAGE
-
-    per_page = min(
-        max(per_page, 1),
-        200,
-    )
-
+def fetch_page(cursor="*", per_page=DEFAULT_PER_PAGE, mailto=None, timeout=90, retries=8):
     params = {
         "filter": "type:education",
-        "per-page": per_page,
+        "per-page": min(max(int(per_page), 1), 200),
         "cursor": cursor,
     }
 
     if mailto:
         params["mailto"] = mailto
 
-    url = (
-        API
-        + "?"
-        + urllib.parse.urlencode(params)
-    )
-
-    last_error = None
+    url = API + "?" + urllib.parse.urlencode(params)
+    last = None
 
     for attempt in range(1, retries + 1):
-
         try:
-
-            request = urllib.request.Request(
+            req = urllib.request.Request(
                 url,
                 headers={
-                    "User-Agent": (
-                        "UniScout/2.0 "
-                        "(university discovery importer)"
-                    ),
+                    "User-Agent": "UniScout/2.0 (university discovery importer)",
                     "Accept": "application/json",
                 },
             )
 
-            with urllib.request.urlopen(
-                request,
-                timeout=timeout,
-            ) as response:
-
-                raw = response.read()
-
-                text = raw.decode(
-                    "utf-8"
-                )
-
-                data = json.loads(
-                    text
-                )
-
-                if not isinstance(
-                    data,
-                    dict,
-                ):
-                    raise ValueError(
-                        "OpenAlex returned an invalid response."
-                    )
-
-                return data
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
 
         except (
             urllib.error.HTTPError,
@@ -139,60 +44,24 @@ def fetch_page(
             TimeoutError,
             OSError,
             json.JSONDecodeError,
-            ValueError,
         ) as exc:
+            last = exc
 
-            last_error = exc
+            if attempt < retries:
+                delay = min(30, 2 ** (attempt - 1))
+                print(
+                    f"  Request failed ({attempt}/{retries}): "
+                    f"{exc}. Retrying in {delay}s..."
+                )
+                time.sleep(delay)
 
-            if attempt >= retries:
-                break
-
-            delay = min(
-                30,
-                2 ** (attempt - 1),
-            )
-
-            print(
-                f"  OpenAlex request failed "
-                f"({attempt}/{retries}): {exc}",
-                flush=True,
-            )
-
-            print(
-                f"  Retrying in {delay}s...",
-                flush=True,
-            )
-
-            time.sleep(
-                delay
-            )
-
-    raise last_error
+    raise last
 
 
-# ============================================================
-# IMPORT
-# ============================================================
-
-def import_openalex(
-    max_pages=None,
-    per_page=DEFAULT_PER_PAGE,
-    mailto=None,
-):
-    """
-    Import the OpenAlex education institution dataset.
-
-    Returns a dictionary containing:
-        new
-        updated
-        skipped
-        errors
-    """
-
+def import_openalex(max_pages=None, per_page=DEFAULT_PER_PAGE, mailto=None):
+    """Import the complete OpenAlex education institution dataset using cursor pagination."""
     cursor = "*"
-
     page = 0
-
     processed = 0
 
     totals = {
@@ -203,247 +72,77 @@ def import_openalex(
     }
 
     seen_cursors = set()
-
     reported_count = None
 
-    print()
-
+    print("=" * 72)
+    print("UniScout: FULL OpenAlex education institution import")
+    print("Endpoint: https://api.openalex.org/institutions")
+    print("Filter: type:education")
+    print(f"Batch size: {per_page}")
     print(
-        "=" * 72
+        "Using cursor pagination. Existing OpenAlex records "
+        "are updated/deduplicated."
     )
-
-    print(
-        "UniScout: FULL OpenAlex education institution import"
-    )
-
-    print(
-        "Endpoint:",
-        API,
-    )
-
-    print(
-        "Filter: type:education"
-    )
-
-    print(
-        f"Batch size: {per_page}"
-    )
-
-    print(
-        "Using cursor pagination."
-    )
-
-    print(
-        "Estimated data will be generated during normalization."
-    )
-
-    print(
-        "=" * 72
-    )
-
-    # ========================================================
-    # MAIN LOOP
-    # ========================================================
+    print("=" * 72)
 
     while True:
-
         page += 1
-
-        print(
-            f"\nDownloading page {page}...",
-            flush=True,
-        )
-
-        # ----------------------------------------------------
-        # DOWNLOAD
-        # ----------------------------------------------------
+        print(f"\nDownloading page {page}...", flush=True)
 
         try:
-
             data = fetch_page(
-                cursor=cursor,
-                per_page=per_page,
-                mailto=mailto,
+                cursor,
+                per_page,
+                mailto,
             )
 
         except Exception as exc:
-
             totals["errors"] += 1
 
             print(
-                f"  ERROR: page {page} failed "
-                f"after retries: {exc}",
+                f"  ERROR: page {page} failed after retries: {exc}",
                 flush=True,
             )
 
             print(
-                "  Already imported records are safe.",
-                flush=True,
-            )
-
-            print(
-                "  Run the importer again to continue.",
+                "  Already committed records are safe. "
+                "You can run app.py again to retry.",
                 flush=True,
             )
 
             break
 
-        # ----------------------------------------------------
-        # RESULTS
-        # ----------------------------------------------------
-
-        results = (
-            data.get("results")
-            or []
-        )
-
-        meta = (
-            data.get("meta")
-            or {}
-        )
-
-        # ----------------------------------------------------
-        # TOTAL COUNT
-        # ----------------------------------------------------
+        results = data.get("results") or []
+        meta = data.get("meta") or {}
 
         if reported_count is None:
-
-            reported_count = meta.get(
-                "count"
-            )
+            reported_count = meta.get("count")
 
             if reported_count is not None:
-
-                try:
-                    display_count = int(
-                        reported_count
-                    )
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    display_count = reported_count
-
                 print(
-                    "OpenAlex reports "
-                    f"{display_count:,} matching "
-                    "education institutions.",
+                    f"OpenAlex reports {reported_count:,} "
+                    "matching education institutions.",
                     flush=True,
                 )
 
-        # ----------------------------------------------------
-        # END OF DATASET
-        # ----------------------------------------------------
-
         if not results:
-
             print(
                 "  Reached the end of the dataset.",
                 flush=True,
             )
-
             break
 
-        # ----------------------------------------------------
-        # NORMALIZE RECORDS
-        # ----------------------------------------------------
+        records = [
+            normalize_openalex(item)
+            for item in results
+        ]
 
-        normalized_records = []
+        stats = import_records(records)
 
-        for item in results:
+        for key in totals:
+            totals[key] += stats[key]
 
-            try:
-
-                normalized = normalize_openalex(
-                    item
-                )
-
-                if not normalized:
-
-                    totals["skipped"] += 1
-
-                    continue
-
-                normalized_records.append(
-                    normalized
-                )
-
-            except Exception as exc:
-
-                totals["errors"] += 1
-
-                institution_name = (
-                    item.get(
-                        "display_name"
-                    )
-                    or item.get(
-                        "id"
-                    )
-                    or "Unknown institution"
-                )
-
-                print(
-                    "  Normalization error:",
-                    institution_name,
-                    "|",
-                    exc,
-                    flush=True,
-                )
-
-        # ----------------------------------------------------
-        # SAVE RECORDS
-        # ----------------------------------------------------
-
-        if normalized_records:
-
-            try:
-
-                stats = import_records(
-                    normalized_records
-                )
-
-                if not isinstance(
-                    stats,
-                    dict,
-                ):
-                    stats = {}
-
-                for key in totals:
-
-                    value = stats.get(
-                        key,
-                        0,
-                    )
-
-                    try:
-                        totals[key] += int(
-                            value
-                        )
-                    except (
-                        TypeError,
-                        ValueError,
-                    ):
-                        pass
-
-            except Exception as exc:
-
-                totals["errors"] += len(
-                    normalized_records
-                )
-
-                print(
-                    "  Database batch error:",
-                    exc,
-                    flush=True,
-                )
-
-        processed += len(
-            results
-        )
-
-        # ----------------------------------------------------
-        # PROGRESS
-        # ----------------------------------------------------
+        processed += len(records)
 
         print(
             f"  Processed: {processed:,} | "
@@ -454,114 +153,47 @@ def import_openalex(
             flush=True,
         )
 
-        # ----------------------------------------------------
-        # NEXT CURSOR
-        # ----------------------------------------------------
-
-        next_cursor = meta.get(
-            "next_cursor"
-        )
+        next_cursor = meta.get("next_cursor")
 
         if not next_cursor:
-
             print(
-                "  OpenAlex returned no next_cursor.",
+                "  OpenAlex returned no next_cursor. Import complete.",
                 flush=True,
             )
-
-            print(
-                "  Import complete.",
-                flush=True,
-            )
-
             break
-
-        # ----------------------------------------------------
-        # PROTECT AGAINST REPEATED CURSOR
-        # ----------------------------------------------------
 
         if (
             next_cursor in seen_cursors
             or next_cursor == cursor
         ):
-
             print(
-                "  ERROR: OpenAlex returned "
-                "a repeated cursor.",
-                flush=True,
-            )
-
-            print(
-                "  Stopping safely.",
+                "  ERROR: OpenAlex returned a repeated cursor. "
+                "Stopping safely.",
                 flush=True,
             )
 
             totals["errors"] += 1
-
             break
 
-        seen_cursors.add(
-            next_cursor
-        )
-
+        seen_cursors.add(next_cursor)
         cursor = next_cursor
 
-        # ----------------------------------------------------
-        # OPTIONAL PAGE LIMIT
-        # ----------------------------------------------------
-
-        if (
-            max_pages
-            and page >= max_pages
-        ):
-
+        if max_pages and page >= max_pages:
             print(
-                f"  Stopping after "
-                f"{max_pages} pages.",
+                f"  Stopping after requested limit of {max_pages} pages.",
                 flush=True,
             )
-
             break
 
-        # ----------------------------------------------------
-        # SMALL DELAY
-        # ----------------------------------------------------
+        time.sleep(0.15)
 
-        time.sleep(
-            REQUEST_DELAY
-        )
-
-    # ========================================================
-    # SUMMARY
-    # ========================================================
-
-    print()
-
-    print(
-        "=" * 72
-    )
+    print("\n" + "=" * 72)
 
     if reported_count is not None:
-
-        try:
-
-            print(
-                "OpenAlex reported total: "
-                f"{int(reported_count):,}"
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            print(
-                "OpenAlex reported total:",
-                reported_count,
-            )
-
+        print(
+            f"OpenAlex reported total: {reported_count:,}"
+        )
     else:
-
         print(
             "OpenAlex reported total: unknown"
         )
@@ -586,21 +218,12 @@ def import_openalex(
         f"Errors: {totals['errors']:,}"
     )
 
-    print(
-        "=" * 72
-    )
+    print("=" * 72)
 
     return totals
 
 
-# ============================================================
-# COMMAND LINE
-# ============================================================
-
 if __name__ == "__main__":
-
     import_openalex(
-        mailto=os.environ.get(
-            "OPENALEX_MAILTO"
-        )
+        mailto=os.environ.get("OPENALEX_MAILTO")
     )
